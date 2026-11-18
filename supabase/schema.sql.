@@ -1,0 +1,133 @@
+-- 1) Создай проект Supabase и открой SQL Editor.
+-- 2) Вставь весь этот файл и нажми Run.
+create extension if not exists pgcrypto;
+
+create table if not exists public.sections (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  sort_order integer not null default 0,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.characters (
+  id uuid primary key default gen_random_uuid(),
+  section_id uuid not null references public.sections(id) on delete cascade,
+  name text not null,
+  image_url text,
+  sort_order integer not null default 0,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.admin_users (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+
+alter table public.sections enable row level security;
+alter table public.characters enable row level security;
+alter table public.admin_users enable row level security;
+
+-- Пользователь может проверить только собственную запись администратора.
+drop policy if exists "admins can read own record" on public.admin_users;
+create policy "admins can read own record" on public.admin_users
+for select to authenticated using (user_id = auth.uid());
+
+-- Каталог доступен всем на чтение.
+drop policy if exists "sections readable by everyone" on public.sections;
+create policy "sections readable by everyone" on public.sections
+for select using (true);
+
+drop policy if exists "characters readable by everyone" on public.characters;
+create policy "characters readable by everyone" on public.characters
+for select using (true);
+
+-- Только вошедший администратор может менять каталог.
+drop policy if exists "sections admin insert" on public.sections;
+create policy "sections admin insert" on public.sections
+for insert to authenticated with check (
+  exists (select 1 from public.admin_users where user_id = auth.uid())
+);
+
+drop policy if exists "sections admin update" on public.sections;
+create policy "sections admin update" on public.sections
+for update to authenticated
+using (exists (select 1 from public.admin_users where user_id = auth.uid()))
+with check (exists (select 1 from public.admin_users where user_id = auth.uid()));
+
+drop policy if exists "sections admin delete" on public.sections;
+create policy "sections admin delete" on public.sections
+for delete to authenticated using (
+  exists (select 1 from public.admin_users where user_id = auth.uid())
+);
+
+drop policy if exists "characters admin insert" on public.characters;
+create policy "characters admin insert" on public.characters
+for insert to authenticated with check (
+  exists (select 1 from public.admin_users where user_id = auth.uid())
+);
+
+drop policy if exists "characters admin update" on public.characters;
+create policy "characters admin update" on public.characters
+for update to authenticated
+using (exists (select 1 from public.admin_users where user_id = auth.uid()))
+with check (exists (select 1 from public.admin_users where user_id = auth.uid()));
+
+drop policy if exists "characters admin delete" on public.characters;
+create policy "characters admin delete" on public.characters
+for delete to authenticated using (
+  exists (select 1 from public.admin_users where user_id = auth.uid())
+);
+
+-- Публичное хранилище изображений.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('catalog-images', 'catalog-images', true, 10485760, array['image/jpeg','image/png','image/webp','image/gif'])
+on conflict (id) do nothing;
+
+drop policy if exists "catalog images public read" on storage.objects;
+create policy "catalog images public read" on storage.objects
+for select using (bucket_id = 'catalog-images');
+
+drop policy if exists "catalog images admin upload" on storage.objects;
+create policy "catalog images admin upload" on storage.objects
+for insert to authenticated with check (
+  bucket_id = 'catalog-images' and
+  exists (select 1 from public.admin_users where user_id = auth.uid())
+);
+
+drop policy if exists "catalog images admin update" on storage.objects;
+create policy "catalog images admin update" on storage.objects
+for update to authenticated
+using (bucket_id = 'catalog-images' and exists (select 1 from public.admin_users where user_id = auth.uid()))
+with check (bucket_id = 'catalog-images' and exists (select 1 from public.admin_users where user_id = auth.uid()));
+
+drop policy if exists "catalog images admin delete" on storage.objects;
+create policy "catalog images admin delete" on storage.objects
+for delete to authenticated using (
+  bucket_id = 'catalog-images' and
+  exists (select 1 from public.admin_users where user_id = auth.uid())
+);
+
+-- Добавляем твои 12 разделов, только если таблица пока пустая.
+insert into public.sections (name, sort_order)
+select v.name, v.sort_order
+from (values
+ ('STARDEW VALLEY',0),
+ ('MrLololoshka',1),
+ ('Не фандомное',2),
+ ('CookieRun',3),
+ ('Интерактивы',4),
+ ('Стримеры',5),
+ ('Песенки',6),
+ ('Cuphead',7),
+ ('Семья шпионов',8),
+ ('Эхо террора',9),
+ ('Genshin Impact',10),
+ ('Три кота',11)
+) as v(name, sort_order)
+where not exists (select 1 from public.sections);
+
+-- После создания пользователя в Authentication → Users добавьте его в список администраторов:
+-- замените email@example.com на свою почту и выполните запрос отдельно.
+-- insert into public.admin_users (user_id)
+-- select id from auth.users where email = 'email@example.com'
+-- on conflict (user_id) do nothing;
